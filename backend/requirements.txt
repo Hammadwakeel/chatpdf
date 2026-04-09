@@ -1,0 +1,17 @@
+fastapi
+uvicorn
+python-multipart
+sqlalchemy
+pymysql
+pydantic-settings
+langchain
+langchain_community
+langchain-groq
+fastembed
+langchain-qdrant
+qdrant-client
+pypdf
+passlib[bcrypt]
+python-jose[cryptography]
+bcrypt==4.0.1
+python-multipart

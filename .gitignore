@@ -1,0 +1,24 @@
+# Frontend (Laravel)
+/rag-frontend/node_modules
+/rag-frontend/public/build
+/rag-frontend/vendor
+/rag-frontend/.env
+/rag-frontend/storage/*.key
+/rag-frontend/database/database.sqlite
+
+# Backend (FastAPI)
+/backend/__pycache__
+/backend/env
+/backend/.env
+/backend/*.pyc
+/backend/db.sqlite3
+
+# Root & General
+.DS_Store
+.env
+
+# Ignore Python environments
+**/__pycache__/
+**/.venv/
+**/env/
+**/venv/
