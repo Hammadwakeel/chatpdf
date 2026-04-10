@@ -1,4 +1,4 @@
-# Quanti Axionix - Full Stack AI ChatPDF Ecosystem
+Full Stack AI ChatPDF Ecosystem
 
 A comprehensive AI platform for document analysis, comparison, and Urdu OCR.
 
