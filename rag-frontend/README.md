@@ -1,6 +1,6 @@
-# Quanti Axionix - Document Intelligence Dashboard
+# Document Intelligence Dashboard
 
-This is the interactive frontend for Quanti Axionix. It provides a seamless, high-performance interface for interacting with document-based AI, featuring specialized modes for standard Q&A, multi-document comparison, and Urdu OCR.
+This is the interactive frontend. It provides a seamless, high-performance interface for interacting with document-based AI, featuring specialized modes for standard Q&A, multi-document comparison, and OCR.
 
 ## 🎨 The Tech Stack
 * **Framework**: Laravel 11 (PHP)
@@ -31,7 +31,6 @@ The frontend manages local Laravel sessions while acting as a secure bearer for 
 ---
 
 ## 📂 Project Structure
-\`\`\`text
 rag-frontend/
 ├── app/
 │   ├── Http/Controllers/  # Route handling & FastAPI Proxy logic
@@ -43,7 +42,6 @@ rag-frontend/
 │   └── js/                # Alpine.js application logic
 ├── routes/                # Web entry points
 └── public/                # Static assets & Compiled Vite builds
-\`\`\`
 
 ---
 
@@ -55,25 +53,25 @@ rag-frontend/
 * Node.js & NPM
 
 ### 2. Environment Configuration
-Create a \`.env\` file:
-\`\`\`env
+Create a .env file:
+env
 FASTAPI_URL=http://127.0.0.1:8000
 OCR_API_URL=https://your-ocr-worker.hf.space/upload
 DB_CONNECTION=sqlite # Or your preferred DB
-\`\`\`
+
 
 ### 3. Install & Build
-\`\`\`bash
+bash
 composer install
 npm install && npm run build
 php artisan key:generate
 php artisan migrate
-\`\`\`
+
 
 ### 4. Start the Dashboard
-\`\`\`bash
+bash
 php artisan serve --port=8001
-\`\`\`
+
 
 ---
 
