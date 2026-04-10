@@ -11,6 +11,9 @@ Route::get('/logout', [AuthController::class, 'logout'])->name('logout');
 
 Route::get('/', [ChatController::class, 'index'])->name('dashboard');
 Route::post('/upload', [ChatController::class, 'upload']);
-Route::post('/ocr-upload', [ChatController::class, 'ocrUpload']); // The new OCR route
+Route::post('/ocr-upload', [ChatController::class, 'ocrUpload']);
 Route::post('/ask', [ChatController::class, 'ask']);
 Route::get('/chat/{session_id}/messages', [ChatController::class, 'getMessages']);
+
+# New route for fetching AI suggested questions
+Route::post('/suggested-questions', [ChatController::class, 'suggestedQuestions']);

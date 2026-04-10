@@ -1,7 +1,9 @@
 import os
-import tempfile
+import shutil
+from pathlib import Path
 from typing import List, TypedDict, Optional
 from fastapi import UploadFile
+from pydantic import BaseModel, Field
 
 # LangGraph & LangChain
 from langgraph.graph import StateGraph, END
@@ -11,6 +13,9 @@ from langchain_community.embeddings.fastembed import FastEmbedEmbeddings
 from langchain_groq import ChatGroq
 from langchain_qdrant import QdrantVectorStore
 from qdrant_client.http import models as qdrant_models
+
+# Tenacity for Retry Logic
+from tenacity import retry, stop_after_attempt, wait_exponential
 
 # Database & Document Processing
 from sqlalchemy.orm import Session
@@ -24,7 +29,19 @@ from app.models.database import ChatMessage, ChatSession
 from app.core.logging_config import logger
 
 # ==========================================
-# 1. State Definition
+# 1. Structured Output Schema & Storage Setup
+# ==========================================
+
+# Directory to store PDFs so the FastAPI StaticFiles can serve them to the frontend viewer
+PDF_STORAGE_DIR = Path("storage/pdfs")
+PDF_STORAGE_DIR.mkdir(parents=True, exist_ok=True)
+
+class SuggestedQuestions(BaseModel):
+    """Schema to force the Llama model to return a structured JSON array of questions."""
+    questions: List[str] = Field(description="A list of 3 highly relevant questions the user could ask about this document.")
+
+# ==========================================
+# 2. State Definition
 # ==========================================
 class GraphState(TypedDict):
     session_id: str
@@ -37,7 +54,7 @@ class GraphState(TypedDict):
     answer: str
 
 # ==========================================
-# 2. Model Preloading Logic
+# 3. Model Preloading Logic
 # ==========================================
 _models = {
     "embeddings": None,
@@ -74,7 +91,7 @@ def get_llm():
     return _models["llm"]
 
 # ==========================================
-# 3. Database & History Helpers
+# 4. Database & History Helpers
 # ==========================================
 def fetch_history(db: Session, session_id: str, limit: int = 10):
     msgs = db.query(ChatMessage).filter(ChatMessage.session_id == session_id)\
@@ -96,7 +113,22 @@ def save_msg(db: Session, session_id: str, role: str, content: str):
         db.rollback()
 
 # ==========================================
-# 4. Ingestion Services (Single & Multi-PDF)
+# 5. Question Suggestion Generation
+# ==========================================
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
+def generate_pdf_suggestions(text_context: str) -> List[str]:
+    """Generates 3 suggested questions using Llama 3.3 with Structured Output."""
+    llm = get_llm()
+    # Bind the Pydantic schema to the model
+    structured_llm = llm.with_structured_output(SuggestedQuestions)
+    
+    prompt = f"Analyze this document snippet and suggest exactly 3 important questions a user might ask about it:\n\n{text_context[:5000]}"
+    result = structured_llm.invoke(prompt)
+    
+    return result.questions
+
+# ==========================================
+# 6. Ingestion Services (Single & Multi-PDF)
 # ==========================================
 
 async def process_and_store_pdf(file: UploadFile, session_id: str, user_id: int, db: Session):
@@ -104,23 +136,32 @@ async def process_and_store_pdf(file: UploadFile, session_id: str, user_id: int,
     return await process_comparison_pdfs([file], session_id, user_id, db, is_comparison=False)
 
 async def process_comparison_pdfs(files: List[UploadFile], session_id: str, user_id: int, db: Session, is_comparison: bool = True):
-    """Ingests multiple PDFs and tags each chunk with its source filename."""
+    """Ingests PDFs, saves them for viewing, generates suggestions, and indexes chunks."""
     logger.info(f"📂 Processing {len(files)} PDFs for session: {session_id}")
     
     all_splits = []
     file_names = []
+    full_text_for_suggestions = ""
 
     for file in files:
         file_names.append(file.filename)
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
-            tmp.write(await file.read())
-            tmp_path = tmp.name
+        
+        # Save the file permanently so the frontend PDF viewer can access it
+        file_path = PDF_STORAGE_DIR / file.filename
+        with open(file_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
 
         try:
-            loader = PyPDFLoader(tmp_path)
+            loader = PyPDFLoader(str(file_path))
+            docs = loader.load()
+            
+            # Accumulate some text to generate the suggested questions later
+            if len(full_text_for_suggestions) < 5000:
+                full_text_for_suggestions += "\n".join([d.page_content for d in docs[:3]])
+
             # Use slightly smaller chunks for better comparison granularity
             text_splitter = RecursiveCharacterTextSplitter(chunk_size=700, chunk_overlap=100)
-            splits = text_splitter.split_documents(loader.load())
+            splits = text_splitter.split_documents(docs)
             
             # Tag each chunk with the session AND the specific filename
             for split in splits:
@@ -128,9 +169,8 @@ async def process_comparison_pdfs(files: List[UploadFile], session_id: str, user
                 split.metadata["source"] = file.filename
             
             all_splits.extend(splits)
-        finally:
-            if os.path.exists(tmp_path):
-                os.remove(tmp_path)
+        except Exception as e:
+            logger.error(f"❌ Error parsing PDF {file.filename}: {e}")
 
     # Store in Qdrant
     vector_store = QdrantVectorStore(
@@ -141,20 +181,33 @@ async def process_comparison_pdfs(files: List[UploadFile], session_id: str, user
     vector_store.add_documents(all_splits)
     logger.info(f"✅ Indexed {len(all_splits)} chunks from {len(files)} files.")
     
+    # Generate suggested questions from the extracted text
+    suggestions = []
+    try:
+        suggestions = generate_pdf_suggestions(full_text_for_suggestions)
+    except Exception as e:
+        logger.error(f"⚠️ Failed to generate suggestions: {e}")
+    
     # Store the session in MySQL
-    display_name = file_names[0] if not is_comparison else f"Comparison: {', '.join(file_names)[:50]}..."
-    new_session = ChatSession(session_id=session_id, user_id=user_id, filename=display_name)
+    # FIXED: Removed the [:50]... truncation to ensure exact file names are preserved for the PDF viewer
+    display_name = file_names[0] if not is_comparison else f"Comparison: {', '.join(file_names)}"
+    
+    # We save the suggestions into the summary column initially so we can retrieve them easily
+    initial_summary = "Suggested: " + "|".join(suggestions) if suggestions else "New conversation."
+    
+    new_session = ChatSession(session_id=session_id, user_id=user_id, filename=display_name, summary=initial_summary)
     db.add(new_session)
     db.commit()
     
-    return {"session_id": session_id, "files_processed": file_names}
+    return {"session_id": session_id, "files_processed": file_names, "suggestions": suggestions}
 
 # ==========================================
-# 5. LangGraph Nodes
+# 7. LangGraph Nodes
 # ==========================================
 
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
 def contextualize_node(state: GraphState):
-    """Rephrases input based on history."""
+    """Rephrases input based on history with retry logic."""
     if not state["chat_history"]:
         return {"standalone_question": state["input_question"]}
     
@@ -190,8 +243,9 @@ def search_node(state: GraphState):
         
     return {"context_text": formatted_context}
 
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
 def generate_node(state: GraphState):
-    """Generates comparative or single-file answers."""
+    """Generates comparative or single-file answers with retry logic."""
     logger.info("🧠 Node: Generating Comparative Answer")
     llm = get_llm()
     
@@ -224,8 +278,9 @@ def generate_node(state: GraphState):
     
     return {"answer": response.content}
 
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
 def summarize_node(state: GraphState):
-    """Updates the summary."""
+    """Updates the summary with retry logic."""
     if len(state["chat_history"]) < 4:
         return {}
 
@@ -240,7 +295,7 @@ def summarize_node(state: GraphState):
     return {"summary": new_sum}
 
 # ==========================================
-# 6. Graph Compilation
+# 8. Graph Compilation
 # ==========================================
 builder = StateGraph(GraphState)
 
@@ -258,7 +313,7 @@ builder.add_edge("summarize", END)
 rag_graph = builder.compile()
 
 # ==========================================
-# 7. Final Entry Point
+# 9. Final Entry Point
 # ==========================================
 def answer_question(session_id: str, question: str, db: Session):
     session_data = db.query(ChatSession).filter(ChatSession.session_id == session_id).first()

@@ -25,7 +25,6 @@ class ChatController extends BaseController {
         $request->validate(['files.*' => 'required|mimes:pdf,jpg,png,jpeg|max:10240']);
         $fileCount = count($request->file('files'));
 
-        // Handle normal uploads (Single or Multi)
         if ($fileCount > 1) {
             $response = $this->api->uploadFiles('compare/upload', $request->file('files'), 'files');
         } else {
@@ -36,8 +35,6 @@ class ChatController extends BaseController {
 
     public function ocrUpload(Request $request) {
         $file = $request->file('files')[0];
-
-        // 1. Get Urdu Text from Hugging Face OCR
         $ocrResponse = Http::attach('file', file_get_contents($file), $file->getClientOriginalName())
                            ->timeout(300)
                            ->post(env('OCR_API_URL', 'https://hammad712-urdu-ocr-app.hf.space/upload'));
@@ -47,14 +44,9 @@ class ChatController extends BaseController {
         }
 
         $text = $ocrResponse->json()['extracted_text'];
-
-        // 2. Convert Text to PDF locally (The "Proxy PDF")
-        // We wrap it in a div with RTL direction for Urdu support
         $pdf = Pdf::loadHTML("<div style='font-family: sans-serif; direction: rtl; text-align: right;'>$text</div>");
         $pdfContent = $pdf->output();
 
-        // 3. Upload the generated PDF to your CLOUD RAG backend
-        // We use the normal /upload endpoint so we don't have to change the cloud code
         $ragResponse = Http::withToken(Session::get('access_token'))
                            ->attach('file', $pdfContent, 'OCR_' . time() . '.pdf')
                            ->post(env('FASTAPI_URL') . '/upload');
@@ -72,6 +64,14 @@ class ChatController extends BaseController {
 
     public function getMessages($id) {
         $response = $this->api->get("chat/{$id}/messages");
+        return response()->json($response->json(), $response->status());
+    }
+
+    // New Method for Suggested Questions
+    public function suggestedQuestions(Request $request) {
+        $response = $this->api->post('suggested-questions', [
+            'session_id' => $request->session_id
+        ]);
         return response()->json($response->json(), $response->status());
     }
 }
